@@ -5,6 +5,7 @@ package dockerstatsreceiver // import "github.com/open-telemetry/opentelemetry-c
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/scrapererror"
-	"go.uber.org/multierr"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/docker"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver/internal/metadata"
@@ -105,35 +105,35 @@ func (r *metricsReceiver) scrapeV2(ctx context.Context) (pmetric.Metrics, error)
 	wg.Wait()
 	close(results)
 
-	var errs error
+	var errs []error
 
 	now := pcommon.NewTimestampFromTime(time.Now())
 	for res := range results {
 		if res.err != nil {
 			// Don't know the number of failed stats, but one container fetch is a partial error.
-			errs = multierr.Append(errs, scrapererror.NewPartialScrapeError(res.err, 0))
+			errs = append(errs, scrapererror.NewPartialScrapeError(res.err, 0))
 			continue
 		}
 		if err := r.recordContainerStats(now, res.stats, res.container); err != nil {
-			errs = multierr.Append(errs, err)
+			errs = append(errs, err)
 		}
 	}
 
-	return r.mb.Emit(), errs
+	return r.mb.Emit(), errors.Join(errs...)
 }
 
 func (r *metricsReceiver) recordContainerStats(now pcommon.Timestamp, containerStats *dtypes.StatsJSON, container *docker.Container) error {
-	var errs error
+	var errs []error
 	r.recordCPUMetrics(now, &containerStats.CPUStats, &containerStats.PreCPUStats)
 	r.recordMemoryMetrics(now, &containerStats.MemoryStats)
 	r.recordBlkioMetrics(now, &containerStats.BlkioStats)
 	r.recordNetworkMetrics(now, &containerStats.Networks)
 	r.recordPidsMetrics(now, &containerStats.PidsStats)
 	if err := r.recordBaseMetrics(now, container.ContainerJSONBase); err != nil {
-		errs = multierr.Append(errs, err)
+		errs = append(errs, err)
 	}
 	if err := r.recordHostConfigMetrics(now, container.ContainerJSON); err != nil {
-		errs = multierr.Append(errs, err)
+		errs = append(errs, err)
 	}
 	r.mb.RecordContainerRestartsDataPoint(now, int64(container.RestartCount))
 
@@ -160,7 +160,7 @@ func (r *metricsReceiver) recordContainerStats(now pcommon.Timestamp, containerS
 	}
 
 	r.mb.EmitForResource(metadata.WithResource(resource))
-	return errs
+	return errors.Join(errs...)
 }
 
 func (r *metricsReceiver) recordMemoryMetrics(now pcommon.Timestamp, memoryStats *dtypes.MemoryStats) {
